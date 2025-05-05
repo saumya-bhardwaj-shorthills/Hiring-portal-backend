@@ -1,0 +1,6 @@
+Django
+djangorestframework
+python-dotenv
+PyPDF2
+requests
+django-cors-headers
