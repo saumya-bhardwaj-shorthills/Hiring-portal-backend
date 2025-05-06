@@ -20,11 +20,12 @@ class SharePointSite(models.Model):
 class Candidate(models.Model):
     # store the Graph file ID so we can filter out parsed resumes
     file_id = models.CharField(max_length=255, unique=True)
+    resume_url = models.URLField(blank=True, null=True)
     resume_id = models.CharField(max_length=200, unique=True)
     name = models.CharField(max_length=255)
     email = models.CharField(max_length=255, blank=True, null=True)
     phone = models.CharField(max_length=50, blank=True, null=True)
-    profile_summary = models.TextField()
+    profile_summary = models.TextField(blank=True, null=True, default="")
     parsed_data = models.JSONField()
     created_at = models.DateTimeField(auto_now_add=True)
 

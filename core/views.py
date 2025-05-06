@@ -106,78 +106,91 @@ def extract_text_from_pdf(pdf_bytes):
 
 @api_view(['POST'])
 def parse_resume(request):
-    file_id = request.data.get('file_id')
-    site_id = request.data.get('site_id')
-    drive_id = request.data.get('drive_id')
-    if not file_id or not site_id or not drive_id:
-        return Response({"error": "File ID, Site ID, and Drive ID are required"}, status=400)
+    file_id   = request.data.get('file_id')
+    site_id   = request.data.get('site_id')
+    drive_id  = request.data.get('drive_id')
+    auth_hdr  = request.headers.get('Authorization')
+
+    if not (file_id and site_id and drive_id and auth_hdr):
+        return Response({"error": "Missing file_id, site_id, drive_id or auth"}, status=400)
+
+    access_token = auth_hdr.split(' ')[1]
 
     try:
-        auth_header = request.headers.get('Authorization')
-        if not auth_header:
-            return Response({"error": "No authorization header"}, status=400)
-        access_token = auth_header.split(' ')[1]
-
-        # Step 1: Download resume file
+        # --- Download PDF ---
         url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/items/{file_id}/content'
         headers = {'Authorization': f'Bearer {access_token}'}
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        file_content = response.content
+        r = requests.get(url, headers=headers); r.raise_for_status()
+        raw_pdf = r.content
 
-        # Step 2: Extract text from PDF
-        resume_text = extract_text_from_pdf(BytesIO(file_content))
-        logger.debug(f"[RESUME TEXT]: {resume_text[:300]}...")
+        # --- Extract text ---
+        resume_text = extract_text_from_pdf(BytesIO(raw_pdf))
+        logger.debug(f"[RESUME TEXT]: {resume_text[:200]}...")
 
-        # Step 3: Construct Gemini prompt
+        # --- Fetch metadata (to get the sharepoint link) ---
+        meta_url  = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/items/{file_id}'
+        meta_resp = requests.get(meta_url, headers=headers); meta_resp.raise_for_status()
+        web_url    = meta_resp.json().get('webUrl', '')
+
+        # --- Build and call the LLM prompt ---
         prompt = f"""
-Given the following resume text, return a JSON object with these fields:
+Given the following resume text, return *only* a JSON object with exactly these fields:
 
-1. name (string)
-2. skills (grouped under categories like Programming Languages, Frameworks, Tools, etc.)
-3. projects (list of projects with name and description)
-4. education (list with degree, institution, duration)
-5. experience (chronologically sorted with role, company, duration, and description)
-6. profile_summary (use existing summary if present, else write a brief one)
+1. name: string
+2. email: string
+3. phone_number: string
+4. employment: array of objects, each with company, role, start_date, end_date, description
+5. education: array of objects, each with institution, degree, start_date, end_date
+6. skills: array of strings
+7. profile_summary: string
 
-Respond only with a valid JSON object. No extra commentary.
+Respond *only* with JSON.
 
 Resume text:
 \"\"\"
 {resume_text}
 \"\"\"
 """
-
-        # Step 4: Call Gemini
-        llm_response = requests.post(
+        llm_resp = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.GEMINI_API_KEY}",
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            headers={'Content-Type': 'application/json'}
+            json={"contents":[{"parts":[{"text":prompt}]}]},
+            headers={'Content-Type':'application/json'}
         )
+        llm_json = llm_resp.json()
+        raw = llm_json['candidates'][0]['content']['parts'][0]['text']
+        # strip markdown fences if any
+        json_str = re.sub(r'^```json|```$', '', raw.strip(), flags=re.MULTILINE).strip()
+        parsed = json.loads(json_str)
 
-        llm_json = llm_response.json()
-        logger.debug(f"[LLM RAW RESPONSE]: {llm_json}")
-
-        # Step 5: Extract and return raw string response from Gemini
-        response_text = llm_json['candidates'][0]['content']['parts'][0]['text'].strip()
-        json_str = re.sub(r'^```json|```$', '', response_text.strip(), flags=re.MULTILINE).strip()
-
-        parsed_json = json.loads(json_str)
-
-        # Create a Candidate record
+        # --- Create Candidate in DB ---
         candidate = Candidate.objects.create(
-            resume_id=get_random_string(12),
-            name=parsed_json.get("name", "Unknown"),
-            email=parsed_json.get("email", ""),
-            phone=parsed_json.get("phone", ""),
-            profile_summary=parsed_json.get("profile_summary", ""),
-            parsed_data=parsed_json
+            file_id       = file_id,
+            resume_url    = web_url,
+            resume_id     = get_random_string(12),
+            name          = parsed.get("name",""),
+            email         = parsed.get("email",""),
+            phone         = parsed.get("phone_number",""),
+            profile_summary = parsed.get("profile_summary","") or "",
+            parsed_data     = parsed
         )
 
-        return Response({"parsed": json.dumps(parsed_json, indent=2)})
+        # --- Return the full Candidate record ---
+        return Response({
+            "id":            candidate.id,
+            "file_id":       candidate.file_id,
+            "resume_url":    candidate.resume_url,
+            "resume_id":     candidate.resume_id,
+            "name":          candidate.name,
+            "email":         candidate.email,
+            "phone":         candidate.phone,
+            "profile_summary": candidate.profile_summary,
+            "parsed_data":     candidate.parsed_data,
+        })
+
     except Exception as e:
-        logger.exception("Unexpected error while parsing resume")
+        logger.exception("Error in parse_resume")
         return Response({"error": str(e)}, status=500)
+
 
 
 @api_view(['GET'])
@@ -196,6 +209,7 @@ def search_candidates(request):
             "email": candidate.email,
             "phone": candidate.phone,
             "summary": candidate.profile_summary,
+            "resume_url": c.resume_url,
             "parsed_data": candidate.parsed_data,
         }
         for candidate in matching_candidates
@@ -214,6 +228,7 @@ def list_candidates(request):
             "name": c.name,
             "email": c.email,
             "phone": c.phone,
+            "resume_url": c.resume_url,
         }
         for c in candidates
     ]
