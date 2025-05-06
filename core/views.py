@@ -204,4 +204,19 @@ def search_candidates(request):
     ]
     return Response({"results": results})
 
-        
+@api_view(['GET'])
+def list_candidates(request):
+    """
+    Return all persisted candidates with basic info.
+    """
+    candidates = Candidate.objects.all()
+    data = [
+        {
+            "id": c.id,
+            "name": c.name,
+            "email": c.email,
+            "phone": c.phone,
+        }
+        for c in candidates
+    ]
+    return Response(data)

@@ -16,6 +16,7 @@ def get_access_token():
 
 def fetch_sharepoint_files(access_token):
     headers = {'Authorization': f'Bearer {access_token}'}
+    print("Resume fetched")
     url = f"{settings.GRAPH_API_ENDPOINT}/sites/{settings.SHAREPOINT_SITE_ID}/drives/{settings.SHAREPOINT_DRIVE_ID}/root/children"
     response = requests.get(url, headers=headers)
     return response.json().get('value', [])
