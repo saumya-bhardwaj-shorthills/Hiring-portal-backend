@@ -8,5 +8,7 @@ urlpatterns = [
     path('api/parse-resume/', views.parse_resume, name='parse_resume'),
     path('api/search-candidates/', views.search_candidates, name='search_candidates'),
     path('api/candidates/', views.list_candidates, name='list_candidates'),
+    path('api/sites/', views.sites, name='sites'),
+    path('api/sites/<int:pk>/resumes/', views.fetch_site_resumes, name='site_resumes'),
 ]
 

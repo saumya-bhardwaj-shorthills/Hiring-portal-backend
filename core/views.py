@@ -7,13 +7,11 @@ from rest_framework.response import Response
 from django.conf import settings
 from .graph_utils import download_file
 import re
-from .models import Candidate
+from .models import SharePointSite, Candidate
 from django.db.models import Q
 import json
 from .models import Candidate
 from django.utils.crypto import get_random_string
-
-
 
 logger = logging.getLogger(__name__)
 
@@ -220,3 +218,101 @@ def list_candidates(request):
         for c in candidates
     ]
     return Response(data)
+
+@api_view(['GET', 'POST'])
+def sites(request):
+    """List existing sites or add a new one."""
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return Response({"error": "No authorization header"}, status=400)
+    token = auth_header.split(' ')[1]
+
+    if request.method == 'GET':
+        qs = SharePointSite.objects.all()
+        data = [
+            {
+                "id": s.id,
+                "site_url": s.site_url,
+                "site_id": s.site_id,
+                "drive_id": s.drive_id
+            }
+            for s in qs
+        ]
+        return Response(data)
+
+    # POST: add new site
+    site_url = request.data.get('site_url')
+    if not site_url:
+        return Response({"error": "site_url required"}, status=400)
+
+    # 1) Fetch site_id
+    # reuse your logic from get_site_id
+    if '://' in site_url:
+        host_and_path = site_url.split('://')[1]
+    else:
+        host_and_path = site_url
+    parts = host_and_path.split('/')
+    hostname = parts[0]
+    path = '/' + '/'.join(parts[1:])
+    url = f'https://graph.microsoft.com/v1.0/sites/{hostname}:{path}'
+    headers = {'Authorization': f'Bearer {token}'}
+    resp = requests.get(url, headers=headers); resp.raise_for_status()
+    site_data = resp.json()
+    site_id = site_data['id']
+
+    # 2) Fetch drives and pick the first one
+    drives_url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drives'
+    drives = requests.get(drives_url, headers=headers).json().get('value', [])
+    if not drives:
+        return Response({"error": "No drives found"}, status=400)
+    drive_id = drives[0]['id']
+
+    # 3) Save
+    site_obj, created = SharePointSite.objects.get_or_create(
+        site_url=site_url,
+        defaults={"site_id": site_id, "drive_id": drive_id}
+    )
+
+    return Response({
+        "id": site_obj.id,
+        "site_url": site_obj.site_url,
+        "site_id": site_obj.site_id,
+        "drive_id": site_obj.drive_id
+    })
+
+
+@api_view(['GET'])
+def fetch_site_resumes(request, pk):
+    """Return only the unparsed resumes for the given saved site."""
+    auth_header = request.headers.get('Authorization')
+    if not auth_header:
+        return Response({"error": "No authorization header"}, status=400)
+    token = auth_header.split(' ')[1]
+
+    try:
+        site = SharePointSite.objects.get(pk=pk)
+    except SharePointSite.DoesNotExist:
+        return Response({"error": "Site not found"}, status=404)
+
+    # 1) Locate the 'Resume' folder
+    resume_folder_url = (
+        f"https://graph.microsoft.com/v1.0/sites/{site.site_id}"
+        f"/drives/{site.drive_id}/root:/Resume"
+    )
+    headers = {'Authorization': f'Bearer {token}'}
+    folder = requests.get(resume_folder_url, headers=headers)
+    folder.raise_for_status()
+    folder_id = folder.json()['id']
+
+    # 2) List children
+    children_url = (
+        f"https://graph.microsoft.com/v1.0/sites/{site.site_id}"
+        f"/drives/{site.drive_id}/items/{folder_id}/children"
+    )
+    files = requests.get(children_url, headers=headers).json().get('value', [])
+
+    # 3) Filter out already parsed
+    parsed_ids = Candidate.objects.values_list('file_id', flat=True)
+    unparsed = [f for f in files if f['id'] not in parsed_ids]
+
+    return Response(unparsed)
