@@ -1,5 +1,3 @@
-Thought for a few seconds
-
 
 ````markdown
 # ATS Backend
@@ -177,13 +175,3 @@ backend/
 ├── manage.py                 # Django CLI
 └── requirements.txt          # pip-installable deps
 ```
-
----
-
-That’s it! You now have:
-
-* A local dev server at `localhost:8000`
-* Full API documentation above
-* A clean, migrated database with `SharePointSite` & `Candidate` tables
-* Endpoints to fetch, parse, store and search resumes via SharePoint & Gemini LLM
-  Enjoy building your recruiter portal!
