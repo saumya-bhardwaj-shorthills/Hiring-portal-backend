@@ -1,16 +1,5 @@
 
 ````markdown
-# ATS Backend
-
-This is the Django‐based backend for the AI­-powered resume parser and recruiter portal. It exposes a set of REST endpoints for:
-
-- Authenticating to SharePoint via Microsoft Graph  
-- Fetching resumes from one or more SharePoint sites  
-- Parsing resumes with Google Gemini LLM  
-- Storing and searching parsed candidate data  
-
----
-
 ## 🚀 Project Setup
 
 1. **Clone the repo**  
