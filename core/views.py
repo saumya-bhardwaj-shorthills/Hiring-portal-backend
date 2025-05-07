@@ -199,21 +199,19 @@ def search_candidates(request):
     if not keyword:
         return Response({"error": "Keyword is required"}, status=400)
 
-    matching_candidates = Candidate.objects.filter(
-        Q(parsed_data__icontains=keyword)
-    )
-
-    results = [
-        {
-            "name": candidate.name,
-            "email": candidate.email,
-            "phone": candidate.phone,
-            "summary": candidate.profile_summary,
-            "resume_url": c.resume_url,
-            "parsed_data": candidate.parsed_data,
-        }
-        for candidate in matching_candidates
-    ]
+    qs = Candidate.objects.filter(Q(parsed_data__icontains=keyword))
+    results = []
+    for c in qs:
+        pd = c.parsed_data or {}
+        results.append({
+            "id":               c.id,
+            "name":             c.name,
+            "email":            c.email,
+            "phone":            c.phone,
+            "resume_url":       c.resume_url,
+            "skills":           pd.get("skills", {}),
+            "profile_summary":  pd.get("profile_summary", "") or c.profile_summary,
+        })
     return Response({"results": results})
 
 @api_view(['GET'])
@@ -222,16 +220,18 @@ def list_candidates(request):
     Return all persisted candidates with basic info.
     """
     candidates = Candidate.objects.all()
-    data = [
-        {
-            "id": c.id,
-            "name": c.name,
-            "email": c.email,
-            "phone": c.phone,
-            "resume_url": c.resume_url,
-        }
-        for c in candidates
-    ]
+    data = []
+    for c in candidates:
+        pd = c.parsed_data or {}
+        data.append({
+            "id":               c.id,
+            "name":             c.name,
+            "email":            c.email,
+            "phone":            c.phone,
+            "resume_url":       c.resume_url,
+            "skills":           pd.get("skills", {}),
+            "profile_summary":  pd.get("profile_summary", "") or c.profile_summary,
+        })
     return Response(data)
 
 @api_view(['GET', 'POST'])
