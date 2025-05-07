@@ -12,6 +12,7 @@ from django.db.models import Q
 import json
 from .models import Candidate
 from django.utils.crypto import get_random_string
+from docx import Document  # python-docx for .docx
 
 logger = logging.getLogger(__name__)
 
@@ -97,99 +98,132 @@ def fetch_resumes(request):
         return Response({"error": str(e)}, status=500)
 
 
-def extract_text_from_pdf(pdf_bytes):
+def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     text = ""
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         for page in doc:
             text += page.get_text()
     return text
 
+def extract_text_from_docx(docx_bytes: bytes) -> str:
+    doc = Document(BytesIO(docx_bytes))
+    return "\n".join(p.text for p in doc.paragraphs)
+
 @api_view(['POST'])
 def parse_resume(request):
-    file_id   = request.data.get('file_id')
-    site_id   = request.data.get('site_id')
-    drive_id  = request.data.get('drive_id')
-    auth_hdr  = request.headers.get('Authorization')
+    file_id  = request.data.get('file_id')
+    site_id  = request.data.get('site_id')
+    drive_id = request.data.get('drive_id')
+    if not (file_id and site_id and drive_id):
+        return Response({"error":"File ID, Site ID, and Drive ID are required"}, status=400)
 
-    if not (file_id and site_id and drive_id and auth_hdr):
-        return Response({"error": "Missing file_id, site_id, drive_id or auth"}, status=400)
-
-    access_token = auth_hdr.split(' ')[1]
+    auth = request.headers.get('Authorization')
+    if not auth:
+        return Response({"error":"No authorization header"}, status=400)
+    token = auth.split(' ')[1]
 
     try:
-        # --- Download PDF ---
-        url = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/items/{file_id}/content'
-        headers = {'Authorization': f'Bearer {access_token}'}
-        r = requests.get(url, headers=headers); r.raise_for_status()
-        raw_pdf = r.content
+        # 1) Fetch metadata
+        meta_url = (
+            f"https://graph.microsoft.com/v1.0/sites/{site_id}"
+            f"/drives/{drive_id}/items/{file_id}"
+            "?$select=name,webUrl"
+        )
+        headers = {'Authorization': f'Bearer {token}'}
+        meta_resp = requests.get(meta_url, headers=headers)
+        meta_resp.raise_for_status()
+        meta = meta_resp.json()
+        filename   = meta.get('name','')
+        resume_url = meta.get('webUrl','')
+        ext = filename.rsplit('.',1)[-1].lower()
 
-        # --- Extract text ---
-        resume_text = extract_text_from_pdf(BytesIO(raw_pdf))
-        logger.debug(f"[RESUME TEXT]: {resume_text[:200]}...")
+        # 2) Download content
+        dl_url = (
+            f"https://graph.microsoft.com/v1.0/sites/{site_id}"
+            f"/drives/{drive_id}/items/{file_id}/content"
+        )
+        dl_resp = requests.get(dl_url, headers=headers)
+        dl_resp.raise_for_status()
+        content = dl_resp.content
 
-        # --- Fetch metadata (to get the sharepoint link) ---
-        meta_url  = f'https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/items/{file_id}'
-        meta_resp = requests.get(meta_url, headers=headers); meta_resp.raise_for_status()
-        web_url    = meta_resp.json().get('webUrl', '')
+        # 3) Extract text
+        if ext == 'pdf':
+            resume_text = extract_text_from_pdf(content)
+        elif ext in ('docx','doc'):
+            resume_text = extract_text_from_docx(content)
+        else:
+            return Response({"error":f"Unsupported file type: .{ext}"}, status=400)
 
-        # --- Build and call the LLM prompt ---
+        # 4) Build prompt
         prompt = f"""
-Given the following resume text, return *only* a JSON object with exactly these fields:
+Given the following resume text, return a JSON object with these fields:
+1. name (string)
+2. email (if present)
+3. phone (if present)
+4. skills (grouped under categories)
+5. projects (name + description)
+6. education (degree, institution, duration)
+7. experience (chronologically sorted)
+8. profile_summary (existing or generated)
 
-1. name: string
-2. email: string
-3. phone_number: string
-4. employment: array of objects, each with company, role, start_date, end_date, description
-5. education: array of objects, each with institution, degree, start_date, end_date
-6. skills: array of strings
-7. profile_summary: string
-
-Respond *only* with JSON.
+Respond ONLY with valid JSON.
 
 Resume text:
 \"\"\"
 {resume_text}
 \"\"\"
 """
+
         llm_resp = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.GEMINI_API_KEY}",
             json={"contents":[{"parts":[{"text":prompt}]}]},
             headers={'Content-Type':'application/json'}
         )
         llm_json = llm_resp.json()
-        raw = llm_json['candidates'][0]['content']['parts'][0]['text']
-        # strip markdown fences if any
-        json_str = re.sub(r'^```json|```$', '', raw.strip(), flags=re.MULTILINE).strip()
+        raw_text = llm_json['candidates'][0]['content']['parts'][0]['text'].strip()
+        json_str = re.sub(r'^```json|```$', '', raw_text, flags=re.MULTILINE).strip()
         parsed = json.loads(json_str)
 
-        # --- Create Candidate in DB ---
-        candidate = Candidate.objects.create(
-            file_id       = file_id,
-            resume_url    = web_url,
-            resume_id     = get_random_string(12),
-            name          = parsed.get("name",""),
-            email         = parsed.get("email",""),
-            phone         = parsed.get("phone_number",""),
-            profile_summary = parsed.get("profile_summary","") or "",
-            parsed_data     = parsed
+        # 5) Get or create candidate, only set resume_id when creating
+        defaults = {
+            'name': parsed.get('name',''),
+            'email': parsed.get('email',''),
+            'phone': parsed.get('phone',''),
+            'profile_summary': parsed.get('profile_summary',''),
+            'parsed_data': parsed,
+            'resume_url': resume_url,
+        }
+        # generate a new resume_id for newly created only
+        candidate, created = Candidate.objects.get_or_create(
+            file_id=file_id,
+            defaults={'resume_id': get_random_string(12), **defaults}
         )
+        if not created:
+            # update the other fields but keep resume_id
+            for field, val in defaults.items():
+                setattr(candidate, field, val)
+            candidate.save()
 
-        # --- Return the full Candidate record ---
+        # 6) return the full candidate
         return Response({
-            "id":            candidate.id,
-            "file_id":       candidate.file_id,
-            "resume_url":    candidate.resume_url,
-            "resume_id":     candidate.resume_id,
-            "name":          candidate.name,
-            "email":         candidate.email,
-            "phone":         candidate.phone,
-            "profile_summary": candidate.profile_summary,
-            "parsed_data":     candidate.parsed_data,
+            "candidate": {
+                "id": candidate.id,
+                "resume_id": candidate.resume_id,
+                "file_id": candidate.file_id,
+                "name": candidate.name,
+                "email": candidate.email,
+                "phone": candidate.phone,
+                "profile_summary": candidate.profile_summary,
+                "parsed_data": candidate.parsed_data,
+                "resume_url": candidate.resume_url,
+            }
         })
 
     except Exception as e:
-        logger.exception("Error in parse_resume")
+        logger.exception("Unexpected error in parse_resume")
         return Response({"error": str(e)}, status=500)
+
+
 
 
 
