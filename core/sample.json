@@ -1,0 +1,72 @@
+{
+    "name": "Jane Doe",
+    "email": "jane.doe@example.com",
+    "phone": "123-456-7890",
+    "skills": [
+        "CI/CD",
+        "Python",
+        "Data Analysis",
+        "JavaScript",
+        "TensorFlow",
+        "AWS",
+        "Data Visualization",
+        "Agile Development",
+        "React",
+        "Docker",
+        "PostgreSQL",
+        "SQL",
+        "Cloud Computing",
+        "Node.js",
+        "Kubernetes",
+        "Git",
+        "Machine Learning"
+    ],
+    "projects": [
+        {
+            "name": "E-commerce Platform",
+            "description": "Developed a fully functional e-commerce platform using React, Node.js, and PostgreSQL. Implemented features such as user authentication, product catalog, shopping cart, and order processing."
+        },
+        {
+            "name": "Data Analysis Dashboard",
+            "description": "Created an interactive data analysis dashboard using Python, Pandas, and Matplotlib to visualize key business metrics and identify trends. Integrated with a cloud data warehouse for real-time data updates."
+        }
+    ],
+    "education": [
+        {
+            "degree": "Master of Science in Computer Science",
+            "institution": "Stanford University",
+            "duration": "2018 - 2020"
+        },
+        {
+            "degree": "Bachelor of Science in Computer Science",
+            "institution": "University of California, Berkeley",
+            "duration": "2014 - 2018"
+        }
+    ],
+    "experience": [
+        {
+            "company": "Tech Solutions Inc.",
+            "role": "Software Engineer",
+            "start_date": "2022-07-01",
+            "end_date": "2024-08-15",
+            "description": "Designed, developed, and maintained web applications using React, Node.js, and PostgreSQL. Deployed and managed applications on AWS using Docker and Kubernetes. Implemented CI/CD pipelines to automate the software delivery process."
+        },
+        {
+            "company": "Data Analytics Corp.",
+            "role": "Data Scientist",
+            "start_date": "2020-08-01",
+            "end_date": "2022-06-30",
+            "description": "Developed machine learning models to solve business problems. Performed data analysis and visualization to identify trends and insights. Built data pipelines to ingest and process large datasets."
+        }
+    ],
+    "profile_summary": "Highly motivated and experienced software engineer and data scientist with a strong background in web development, cloud computing, and machine learning. Proven ability to design, develop, and deploy scalable and reliable applications. Passionate about using data to solve complex problems and drive business value.",
+    "domain_classification": [
+        "Frontend Developer",
+        "Backend Developer",
+        "Data Engineer",
+        "Full Stack Developer",
+        "ML Engineer",
+        "DevOps Engineer"
+    ],
+    "total_years_of_experience": 4.0
+}

@@ -111,15 +111,15 @@ def extract_text_from_docx(docx_bytes: bytes) -> str:
 
 @api_view(['POST'])
 def parse_resume(request):
-    file_id  = request.data.get('file_id')
-    site_id  = request.data.get('site_id')
+    file_id = request.data.get('file_id')
+    site_id = request.data.get('site_id')
     drive_id = request.data.get('drive_id')
     if not (file_id and site_id and drive_id):
-        return Response({"error":"File ID, Site ID, and Drive ID are required"}, status=400)
+        return Response({"error": "File ID, Site ID, and Drive ID are required"}, status=400)
 
     auth = request.headers.get('Authorization')
     if not auth:
-        return Response({"error":"No authorization header"}, status=400)
+        return Response({"error": "No authorization header"}, status=400)
     token = auth.split(' ')[1]
 
     try:
@@ -133,9 +133,9 @@ def parse_resume(request):
         meta_resp = requests.get(meta_url, headers=headers)
         meta_resp.raise_for_status()
         meta = meta_resp.json()
-        filename   = meta.get('name','')
-        resume_url = meta.get('webUrl','')
-        ext = filename.rsplit('.',1)[-1].lower()
+        filename = meta.get('name', '')
+        resume_url = meta.get('webUrl', '')
+        ext = filename.rsplit('.', 1)[-1].lower()
 
         # 2) Download content
         dl_url = (
@@ -146,27 +146,42 @@ def parse_resume(request):
         dl_resp.raise_for_status()
         content = dl_resp.content
 
-        # 3) Extract text
+        # 3) Extract text from resume
         if ext == 'pdf':
             resume_text = extract_text_from_pdf(content)
-        elif ext in ('docx','doc'):
+        elif ext in ('docx', 'doc'):
             resume_text = extract_text_from_docx(content)
         else:
-            return Response({"error":f"Unsupported file type: .{ext}"}, status=400)
+            return Response({"error": f"Unsupported file type: .{ext}"}, status=400)
 
-        # 4) Build prompt
+        # 4) Enhanced LLM Prompt for Parsing Resume
         prompt = f"""
-Given the following resume text, return a JSON object with these fields:
-1. name (string)
-2. email (if present)
-3. phone (if present)
-4. skills (grouped under categories)
-5. projects (name + description)
-6. education (degree, institution, duration)
-7. experience (chronologically sorted)
-8. profile_summary (existing or generated)
+You are a highly advanced resume parsing assistant. 
+Parse the following resume text and generate a structured JSON object with the following fields:
 
-Respond ONLY with valid JSON.
+1. "name": The full name of the candidate
+2. "email": The email address of the candidate
+3. "phone": The contact number of the candidate
+4. "skills": A flat list of all technical and professional skills (e.g., ["Python", "AWS", "React"])
+5. "projects": A list of projects with:
+   - "name": The project name
+   - "description": A brief description of the project
+6. "education": A list of education details with:
+   - "degree": Name of the degree
+   - "institution": Educational institution
+   - "duration": Duration of the course
+7. "experience": A list of work experiences with:
+   - "company": Company name
+   - "role": Job role
+   - "start_date": Start date
+   - "end_date": End date
+   - "description": Role description
+8. "profile_summary": A brief professional summary if available
+9. "domain_classification": A list of one or more roles such as:
+   - "Frontend Developer", "Backend Developer", "Data Engineer", "Full Stack Developer", "DevOps Engineer", "ML Engineer", "Database Administrator"
+10. "total_years_of_experience": A numeric value representing the total years of professional experience
+
+Respond ONLY with a well-formatted JSON object.
 
 Resume text:
 \"\"\"
@@ -174,37 +189,47 @@ Resume text:
 \"\"\"
 """
 
+        # 5) Send to LLM API
         llm_resp = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={settings.GEMINI_API_KEY}",
-            json={"contents":[{"parts":[{"text":prompt}]}]},
-            headers={'Content-Type':'application/json'}
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            headers={'Content-Type': 'application/json'}
         )
         llm_json = llm_resp.json()
         raw_text = llm_json['candidates'][0]['content']['parts'][0]['text'].strip()
         json_str = re.sub(r'^```json|```$', '', raw_text, flags=re.MULTILINE).strip()
         parsed = json.loads(json_str)
 
-        # 5) Get or create candidate, only set resume_id when creating
+        # 6) Normalize skills and calculate experience
+        parsed['skills'] = list(set(parsed.get('skills', [])))  # Remove duplicates
+
+        # if 'total_years_of_experience' not in parsed or not parsed['total_years_of_experience']:
+        #     parsed['total_years_of_experience'] = calculate_experience(parsed.get('experience', []))
+
+        # 7) Prepare candidate data for database
         defaults = {
-            'name': parsed.get('name',''),
-            'email': parsed.get('email',''),
-            'phone': parsed.get('phone',''),
-            'profile_summary': parsed.get('profile_summary',''),
+            'name': parsed.get('name', ''),
+            'email': parsed.get('email', ''),
+            'phone': parsed.get('phone', ''),
+            'profile_summary': parsed.get('profile_summary', ''),
             'parsed_data': parsed,
             'resume_url': resume_url,
+            'skills': parsed.get('skills', []),
+            'domain_classification': parsed.get('domain_classification', []),
+            'total_years_of_experience': parsed.get('total_years_of_experience', 0)
         }
-        # generate a new resume_id for newly created only
+
+        # 8) Get or create candidate record
         candidate, created = Candidate.objects.get_or_create(
             file_id=file_id,
             defaults={'resume_id': get_random_string(12), **defaults}
         )
         if not created:
-            # update the other fields but keep resume_id
             for field, val in defaults.items():
                 setattr(candidate, field, val)
             candidate.save()
 
-        # 6) return the full candidate
+        # 9) Return complete response with additional fields
         return Response({
             "candidate": {
                 "id": candidate.id,
@@ -214,6 +239,9 @@ Resume text:
                 "email": candidate.email,
                 "phone": candidate.phone,
                 "profile_summary": candidate.profile_summary,
+                "skills": candidate.skills,
+                "domain_classification": candidate.domain_classification,
+                "total_years_of_experience": candidate.total_years_of_experience,
                 "parsed_data": candidate.parsed_data,
                 "resume_url": candidate.resume_url,
             }
@@ -222,9 +250,6 @@ Resume text:
     except Exception as e:
         logger.exception("Unexpected error in parse_resume")
         return Response({"error": str(e)}, status=500)
-
-
-
 
 
 @api_view(['GET'])
@@ -256,17 +281,20 @@ def list_candidates(request):
     candidates = Candidate.objects.all()
     data = []
     for c in candidates:
-        pd = c.parsed_data or {}
         data.append({
             "id":               c.id,
             "name":             c.name,
             "email":            c.email,
             "phone":            c.phone,
             "resume_url":       c.resume_url,
-            "skills":           pd.get("skills", {}),
-            "profile_summary":  pd.get("profile_summary", "") or c.profile_summary,
+            "skills":           c.skills,   # Directly from the model
+            "profile_summary":  c.profile_summary,  # Directly from the model
+            "domain_classification": c.domain_classification,  # Directly from the model
+            "total_years_of_experience": c.total_years_of_experience,  # Directly from the model
+            "parsed_data":      c.parsed_data
         })
     return Response(data)
+
 
 @api_view(['GET', 'POST'])
 def sites(request):
